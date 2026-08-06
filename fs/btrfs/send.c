@@ -153,6 +153,11 @@ struct send_ctx {
 	/* Protocol version compatibility requested */
 	u32 proto;
 
+	/* Compression type and level for BTRFS_SEND_FLAG_DOCOMPRESS */
+	unsigned int send_compress_type;
+	int send_compress_level;
+	char *compress_buf;
+
 	struct btrfs_root *send_root;
 	struct btrfs_root *parent_root;
 	struct clone_root *clone_roots;
@@ -5598,6 +5603,174 @@ out:
 	return ret;
 }
 
+/*
+ * Read data from the page cache, compress it with the user-specified
+ * algorithm/level, and send it as an ENCODED_WRITE command.
+ * Falls back to uncompressed send_write() if compression doesn't help.
+ */
+static int send_compressed_write(struct send_ctx *sctx, u64 offset, u32 len)
+{
+	struct btrfs_fs_info *fs_info = sctx->send_root->fs_info;
+	struct address_space *mapping = sctx->cur_inode->i_mapping;
+	const u64 end = offset + len;
+	const pgoff_t last_index = ((end - 1) >> PAGE_SHIFT);
+	struct fs_path *fspath;
+	struct btrfs_cmd_header *hdr;
+	u64 cur = offset;
+	u32 buf_offset = 0;
+	u32 data_offset;
+	size_t compressed_len;
+	u32 crc;
+	int ret = 0;
+
+	/*
+	 * Read uncompressed data from page cache into a single buffer to be
+	 * compressed all at once
+	 */
+	while (cur < end) {
+		pgoff_t index = (cur >> PAGE_SHIFT);
+		unsigned int cur_len;
+		unsigned int pg_offset;
+		struct folio *folio;
+
+		folio = filemap_lock_folio(mapping, index);
+		if (IS_ERR(folio)) {
+			page_cache_sync_readahead(mapping, &sctx->ra, NULL,
+						  index, last_index + 1 - index);
+
+			folio = filemap_grab_folio(mapping, index);
+			if (IS_ERR(folio)) {
+				ret = PTR_ERR(folio);
+				goto out;
+			}
+		}
+		pg_offset = offset_in_folio(folio, cur);
+		cur_len = min_t(unsigned int, end - cur, folio_size(folio) - pg_offset);
+
+		if (folio_test_readahead(folio))
+			page_cache_async_readahead(mapping, &sctx->ra, NULL, folio,
+						   last_index + 1 - index);
+
+		if (!folio_test_uptodate(folio)) {
+			btrfs_read_folio(NULL, folio);
+			folio_lock(folio);
+			if (unlikely(!folio_test_uptodate(folio))) {
+				folio_unlock(folio);
+				btrfs_err(fs_info,
+			"send: IO error at offset %llu for inode %llu root %llu",
+					folio_pos(folio), sctx->cur_ino,
+					btrfs_root_id(sctx->send_root));
+				folio_put(folio);
+				ret = -EIO;
+				goto out;
+			}
+			if (folio->mapping != mapping) {
+				folio_unlock(folio);
+				folio_put(folio);
+				continue;
+			}
+		}
+
+		memcpy_from_folio(sctx->compress_buf + buf_offset, folio,
+				  pg_offset, cur_len);
+		folio_unlock(folio);
+		folio_put(folio);
+		cur += cur_len;
+		buf_offset += cur_len;
+	}
+
+	/* Build command header and TLVs */
+	fspath = get_cur_inode_path(sctx);
+	if (IS_ERR(fspath))
+		return PTR_ERR(fspath);
+
+	ret = begin_cmd(sctx, BTRFS_SEND_C_ENCODED_WRITE);
+	if (ret < 0)
+		return ret;
+
+	TLV_PUT_PATH(sctx, BTRFS_SEND_A_PATH, fspath);
+	TLV_PUT_U64(sctx, BTRFS_SEND_A_FILE_OFFSET, offset);
+	TLV_PUT_U64(sctx, BTRFS_SEND_A_UNENCODED_FILE_LEN, len);
+	TLV_PUT_U64(sctx, BTRFS_SEND_A_UNENCODED_LEN, len);
+	TLV_PUT_U64(sctx, BTRFS_SEND_A_UNENCODED_OFFSET, 0);
+	ret = btrfs_encoded_io_compression_from_extent(fs_info,
+						       sctx->send_compress_type);
+	if (ret < 0)
+		goto out;
+	TLV_PUT_U32(sctx, BTRFS_SEND_A_COMPRESSION, ret);
+	TLV_PUT_U32(sctx, BTRFS_SEND_A_ENCRYPTION, 0);
+
+	ret = put_data_header(sctx, len);
+	if (ret < 0)
+		goto out;
+
+	/* Compress into send_buf at page-aligned offset */
+	data_offset = PAGE_ALIGN(sctx->send_size);
+	if (unlikely(data_offset > sctx->send_max_size ||
+		     sctx->send_max_size - data_offset < len)) {
+		ret = -EOVERFLOW;
+		goto fallback;
+	}
+
+	ret = btrfs_compress_buf(fs_info, sctx->send_compress_type,
+				 sctx->send_compress_level,
+				 sctx->compress_buf, len,
+				 sctx->send_buf + data_offset,
+				 sctx->send_max_size - data_offset,
+				 &compressed_len);
+	if (ret < 0)
+		goto fallback;
+
+	/* Finalize CRC and write, same as send_encoded_extent does */
+	hdr = (struct btrfs_cmd_header *)sctx->send_buf;
+	hdr->len = cpu_to_le32(sctx->send_size + compressed_len - sizeof(*hdr));
+	hdr->crc = 0;
+	crc = crc32c(0, sctx->send_buf, sctx->send_size);
+	crc = crc32c(crc, sctx->send_buf + data_offset, compressed_len);
+	hdr->crc = cpu_to_le32(crc);
+
+	ret = write_buf(sctx->send_filp, sctx->send_buf, sctx->send_size,
+			&sctx->send_off);
+	if (!ret) {
+		ret = write_buf(sctx->send_filp, sctx->send_buf + data_offset,
+				compressed_len, &sctx->send_off);
+	}
+	sctx->send_size = 0;
+	sctx->put_data = false;
+
+	return ret;
+
+fallback:
+	/*
+	 * Compression didn't help or failed. Reset command state and fall back
+	 * to an uncompressed write using the data we already read.
+	 */
+	sctx->send_size = 0;
+	sctx->put_data = false;
+
+	ret = begin_cmd(sctx, BTRFS_SEND_C_WRITE);
+	if (ret < 0)
+		return ret;
+
+	TLV_PUT_PATH(sctx, BTRFS_SEND_A_PATH, fspath);
+	TLV_PUT_U64(sctx, BTRFS_SEND_A_FILE_OFFSET, offset);
+
+	ret = put_data_header(sctx, len);
+	if (ret < 0)
+		goto out;
+
+	memcpy(sctx->send_buf + sctx->send_size, sctx->compress_buf, len);
+	sctx->send_size += len;
+
+	ret = send_cmd(sctx);
+
+tlv_put_failure:
+out:
+	sctx->send_size = 0;
+	sctx->put_data = false;
+	return ret;
+}
+
 static int send_extent_data(struct send_ctx *sctx, struct btrfs_path *path,
 			    const u64 offset, const u64 len)
 {
@@ -5674,7 +5847,11 @@ static int send_extent_data(struct send_ctx *sctx, struct btrfs_path *path,
 		u64 size = min(len - sent, read_size);
 		int ret;
 
-		ret = send_write(sctx, offset + sent, size);
+		if ((sctx->flags & BTRFS_SEND_FLAG_DOCOMPRESS) &&
+		    !(BTRFS_I(sctx->cur_inode)->flags & BTRFS_INODE_NOCOMPRESS))
+			ret = send_compressed_write(sctx, offset + sent, size);
+		else
+			ret = send_write(sctx, offset + sent, size);
 		if (ret < 0)
 			return ret;
 		sent += size;
@@ -8050,6 +8227,30 @@ long btrfs_ioctl_send(struct btrfs_root *send_root, const struct btrfs_ioctl_sen
 		goto out;
 	}
 
+	if (arg->flags & BTRFS_SEND_FLAG_DOCOMPRESS) {
+		if (sctx->proto < 2) {
+			ret = -EINVAL;
+			goto out;
+		}
+		/* COMPRESS and COMPRESSED are mutually exclusive */
+		if (arg->flags & BTRFS_SEND_FLAG_COMPRESSED) {
+			ret = -EINVAL;
+			goto out;
+		}
+		if (arg->compress_type == 0 ||
+		    arg->compress_type >= BTRFS_NR_COMPRESS_TYPES) {
+			ret = -EINVAL;
+			goto out;
+		}
+		if (!btrfs_compress_level_valid(arg->compress_type,
+						arg->compress_level)) {
+			ret = -EINVAL;
+			goto out;
+		}
+		sctx->send_compress_type = arg->compress_type;
+		sctx->send_compress_level = arg->compress_level;
+	}
+
 	sctx->send_filp = fget(arg->send_fd);
 	if (!sctx->send_filp || !(sctx->send_filp->f_mode & FMODE_WRITE)) {
 		ret = -EBADF;
@@ -8086,6 +8287,14 @@ long btrfs_ioctl_send(struct btrfs_root *send_root, const struct btrfs_ioctl_sen
 	if (!sctx->send_buf) {
 		ret = -ENOMEM;
 		goto out;
+	}
+
+	if (arg->flags & BTRFS_SEND_FLAG_DOCOMPRESS) {
+		sctx->compress_buf = kvmalloc(BTRFS_MAX_UNCOMPRESSED, GFP_KERNEL);
+		if (!sctx->compress_buf) {
+			ret = -ENOMEM;
+			goto out;
+		}
 	}
 
 	sctx->clone_roots = kvzalloc_objs(*sctx->clone_roots,
@@ -8279,6 +8488,7 @@ out:
 		kvfree(sctx->clone_roots);
 		kfree(sctx->send_buf_pages);
 		kvfree(sctx->send_buf);
+		kvfree(sctx->compress_buf);
 		kvfree(sctx->verity_descriptor);
 
 		close_current_inode(sctx);

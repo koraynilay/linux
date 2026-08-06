@@ -179,5 +179,16 @@ struct list_head *zstd_alloc_workspace(struct btrfs_fs_info *fs_info, int level)
 void zstd_free_workspace(struct list_head *ws);
 struct list_head *zstd_get_workspace(struct btrfs_fs_info *fs_info, int level);
 void zstd_put_workspace(struct btrfs_fs_info *fs_info, struct list_head *ws);
+int btrfs_compress_buf(struct btrfs_fs_info *fs_info, unsigned int type,
+		       int level, const char *data_in, size_t len_in,
+		       char *data_out, size_t max_out, size_t *out_len);
+
+int zlib_compress_buf(struct list_head *ws, const char *data_in, size_t len_in,
+		      char *data_out, size_t max_out, size_t *out_len);
+int zstd_compress_buf(struct list_head *ws, const char *data_in, size_t len_in,
+		      char *data_out, size_t max_out, size_t *out_len);
+int lzo_compress_buf(struct list_head *ws, const char *data_in, size_t len_in,
+		     char *data_out, size_t max_out, size_t *out_len,
+		     unsigned int sectorsize);
 
 #endif

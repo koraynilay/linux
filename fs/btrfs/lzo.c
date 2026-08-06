@@ -364,6 +364,72 @@ out:
 	return ret;
 }
 
+int lzo_compress_buf(struct list_head *ws, const char *data_in, size_t len_in,
+		     char *data_out, size_t max_out, size_t *out_len,
+		     unsigned int sectorsize)
+{
+	struct workspace *workspace = list_entry(ws, struct workspace, list);
+	size_t cur_in = 0;
+	u32 total_out = LZO_LEN;	/* Reserve space for total size header */
+	int ret;
+
+	if (max_out < LZO_LEN)
+		return -E2BIG;
+
+	while (cur_in < len_in) {
+		const u32 sector_off = cur_in & (sectorsize - 1);
+		const u32 in_len = min_t(u32, len_in - cur_in,
+					 sectorsize - sector_off);
+		size_t seg_out_len;
+		u32 sector_bytes_left;
+
+		ret = lzo1x_1_compress(data_in + cur_in, in_len,
+				       workspace->cbuf, &seg_out_len,
+				       workspace->mem);
+		if (unlikely(ret < 0))
+			return -EIO;
+
+		/*
+		 * Check if we can fit the next segment header into the remaining space
+		 * of the sector. If not, pad with zeros to the next sector boundary.
+		 */
+		sector_bytes_left = round_up(total_out, sectorsize) - total_out;
+		if (sector_bytes_left > 0 && sector_bytes_left < LZO_LEN) {
+			if (total_out + sector_bytes_left > max_out)
+				return -E2BIG;
+			memset(data_out + total_out, 0, sector_bytes_left);
+			total_out += sector_bytes_left;
+		}
+
+		/* Check if we have room for segment header + data */
+		if (total_out + LZO_LEN + seg_out_len > max_out)
+			return -E2BIG;
+
+		/* Write segment header (compressed length) */
+		put_unaligned_le32(seg_out_len, data_out + total_out);
+		total_out += LZO_LEN;
+
+		/* Write compressed segment data */
+		memcpy(data_out + total_out, workspace->cbuf, seg_out_len);
+		total_out += seg_out_len;
+
+		cur_in += in_len;
+
+		/* Check if we're making it bigger */
+		if (cur_in > sectorsize * 2 && cur_in < total_out)
+			return -E2BIG;
+	}
+
+	if (total_out >= len_in)
+		return -E2BIG;
+
+	/* Write total compressed size at the beginning */
+	put_unaligned_le32(total_out, data_out);
+
+	*out_len = total_out;
+	return 0;
+}
+
 static struct folio *get_current_folio(struct compressed_bio *cb, struct folio_iter *fi,
 				       u32 *cur_folio_index, u32 cur_in)
 {

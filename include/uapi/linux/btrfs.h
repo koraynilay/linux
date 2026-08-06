@@ -842,12 +842,20 @@ struct btrfs_ioctl_received_subvol_args {
  */
 #define BTRFS_SEND_FLAG_COMPRESSED		0x10
 
+/*
+ * Compress data before sending using the ENCODED_WRITE command. The compression
+ * type and level are specified in compress_type and compress_level of struct
+ * btrfs_ioctl_send_args. This requires protocol version >= 2.
+ */
+#define BTRFS_SEND_FLAG_DOCOMPRESS		0x20
+
 #define BTRFS_SEND_FLAG_MASK \
 	(BTRFS_SEND_FLAG_NO_FILE_DATA | \
 	 BTRFS_SEND_FLAG_OMIT_STREAM_HEADER | \
 	 BTRFS_SEND_FLAG_OMIT_END_CMD | \
 	 BTRFS_SEND_FLAG_VERSION | \
-	 BTRFS_SEND_FLAG_COMPRESSED)
+	 BTRFS_SEND_FLAG_COMPRESSED | \
+	 BTRFS_SEND_FLAG_DOCOMPRESS)
 
 struct btrfs_ioctl_send_args {
 	__s64 send_fd;			/* in */
@@ -856,7 +864,9 @@ struct btrfs_ioctl_send_args {
 	__u64 parent_root;		/* in */
 	__u64 flags;			/* in */
 	__u32 version;			/* in */
-	__u8  reserved[28];		/* in */
+	__u8  compress_type;		/* in */
+	__s8  compress_level;		/* in */
+	__u8  reserved[26];		/* in */
 };
 
 /*

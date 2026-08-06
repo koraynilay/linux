@@ -335,6 +335,40 @@ out:
 	return ret;
 }
 
+int zlib_compress_buf(struct list_head *ws, const char *data_in, size_t len_in,
+		      char *data_out, size_t max_out, size_t *out_len)
+{
+	struct workspace *workspace = list_entry(ws, struct workspace, list);
+	int ret;
+
+	ret = zlib_deflateInit(&workspace->strm, workspace->level);
+	if (unlikely(ret != Z_OK))
+		return -EIO;
+
+	workspace->strm.next_in = (const Byte *)data_in;
+	workspace->strm.avail_in = len_in;
+	workspace->strm.next_out = (Byte *)data_out;
+	workspace->strm.avail_out = max_out;
+	workspace->strm.total_in = 0;
+	workspace->strm.total_out = 0;
+
+	ret = zlib_deflate(&workspace->strm, Z_FINISH);
+	if (ret != Z_STREAM_END) {
+		zlib_deflateEnd(&workspace->strm);
+		if (ret == Z_OK || ret == Z_BUF_ERROR)
+			return -E2BIG;
+		return -EIO;
+	}
+
+	zlib_deflateEnd(&workspace->strm);
+
+	if (workspace->strm.total_out >= len_in)
+		return -E2BIG;
+
+	*out_len = workspace->strm.total_out;
+	return 0;
+}
+
 int zlib_decompress_bio(struct list_head *ws, struct compressed_bio *cb)
 {
 	struct btrfs_fs_info *fs_info = cb_to_fs_info(cb);

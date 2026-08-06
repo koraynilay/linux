@@ -117,7 +117,9 @@ struct btrfs_ioctl_send_args_32 {
 	__u64 parent_root;		/* in */
 	__u64 flags;			/* in */
 	__u32 version;			/* in */
-	__u8  reserved[28];		/* in */
+	__u8  compress_type;		/* in */
+	__s8  compress_level;		/* in */
+	__u8  reserved[26];		/* in */
 } __attribute__ ((__packed__));
 
 #define BTRFS_IOC_SEND_32 _IOW(BTRFS_IOCTL_MAGIC, 38, \
@@ -4282,6 +4284,8 @@ static int _btrfs_ioctl_send(struct btrfs_root *root, void __user *argp, bool co
 		arg->parent_root = args32.parent_root;
 		arg->flags = args32.flags;
 		arg->version = args32.version;
+		arg->compress_type = args32.compress_type;
+		arg->compress_level = args32.compress_level;
 		memcpy(arg->reserved, args32.reserved,
 		       sizeof(args32.reserved));
 #else

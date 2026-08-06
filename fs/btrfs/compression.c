@@ -1061,6 +1061,53 @@ struct compressed_bio *btrfs_compress_bio(struct btrfs_inode *inode,
 	return cb;
 }
 
+/*
+ * Compress a flat buffer.
+ *
+ * @fs_info:   filesystem info (for workspace management and sectorsize)
+ * @type:      compression algorithm (BTRFS_COMPRESS_*)
+ * @level:     compression level (0 for default)
+ * @data_in:   input uncompressed data
+ * @len_in:    length of input data
+ * @data_out:  output buffer for compressed data
+ * @max_out:   maximum output buffer size
+ * @out_len:   actual compressed length (set on success)
+ *
+ * Returns 0 on success, -E2BIG if compressed data is not smaller than input,
+ * other negative errno on error.
+ */
+int btrfs_compress_buf(struct btrfs_fs_info *fs_info, unsigned int type,
+		       int level, const char *data_in, size_t len_in,
+		       char *data_out, size_t max_out, size_t *out_len)
+{
+	struct list_head *workspace;
+	int ret;
+
+	level = btrfs_compress_set_level(type, level);
+	workspace = get_workspace(fs_info, type, level);
+
+	switch (type) {
+	case BTRFS_COMPRESS_ZLIB:
+		ret = zlib_compress_buf(workspace, data_in, len_in,
+				       data_out, max_out, out_len);
+		break;
+	case BTRFS_COMPRESS_LZO:
+		ret = lzo_compress_buf(workspace, data_in, len_in,
+				      data_out, max_out, out_len,
+				      fs_info->sectorsize);
+		break;
+	case BTRFS_COMPRESS_ZSTD:
+		ret = zstd_compress_buf(workspace, data_in, len_in,
+				       data_out, max_out, out_len);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
+	put_workspace(fs_info, type, workspace);
+	return ret;
+}
+
 static int btrfs_decompress_bio(struct compressed_bio *cb)
 {
 	struct btrfs_fs_info *fs_info = cb_to_fs_info(cb);

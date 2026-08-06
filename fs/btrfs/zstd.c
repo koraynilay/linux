@@ -580,6 +580,45 @@ out:
 	return ret;
 }
 
+int zstd_compress_buf(struct list_head *ws, const char *data_in, size_t len_in,
+		      char *data_out, size_t max_out, size_t *out_len)
+{
+	struct workspace *workspace = list_entry(ws, struct workspace, list);
+	zstd_cstream *stream;
+	size_t ret2;
+
+	workspace->params = zstd_get_btrfs_parameters(workspace->req_level,
+						       len_in);
+	stream = zstd_init_cstream(&workspace->params, len_in,
+				   workspace->mem, workspace->size);
+	if (unlikely(!stream))
+		return -EIO;
+
+	workspace->in_buf.src = data_in;
+	workspace->in_buf.pos = 0;
+	workspace->in_buf.size = len_in;
+	workspace->out_buf.dst = data_out;
+	workspace->out_buf.pos = 0;
+	workspace->out_buf.size = max_out;
+
+	ret2 = zstd_compress_stream(stream, &workspace->out_buf,
+				    &workspace->in_buf);
+	if (unlikely(zstd_is_error(ret2)))
+		return -EIO;
+
+	ret2 = zstd_end_stream(stream, &workspace->out_buf);
+	if (unlikely(zstd_is_error(ret2)))
+		return -EIO;
+	if (ret2 != 0)
+		return -E2BIG;
+
+	if (workspace->out_buf.pos >= len_in)
+		return -E2BIG;
+
+	*out_len = workspace->out_buf.pos;
+	return 0;
+}
+
 int zstd_decompress_bio(struct list_head *ws, struct compressed_bio *cb)
 {
 	struct btrfs_fs_info *fs_info = cb_to_fs_info(cb);
