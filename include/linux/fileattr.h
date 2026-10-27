@@ -37,7 +37,7 @@
 
 /* Flags only for fa_ fields */
 #define FS_FILE_ATTR_XFLAGS_MASK \
-	(FS_XFLAGS_MASK | FS_XFLAG_PROJID)
+	(FS_XFLAGS_MASK | FS_XFLAG_PTIME | FS_XFLAG_PROJID)
 
 /*
  * Merged interface for miscellaneous file attributes.  'flags' originates from
@@ -54,6 +54,7 @@ struct file_kattr {
 	u32	fsx_nextents;	/* nextents field value (get)	*/
 	u32	fsx_projid;	/* project identifier (get/set) */
 	u32	fsx_cowextsize;	/* CoW extsize field value (get/set)*/
+	struct timespec64 fsx_ptime; /* provenance (settable birth) time */
 	/* selectors: */
 	bool	flags_valid:1;
 	bool	fsx_valid:1;

@@ -118,6 +118,8 @@ static void fileattr_to_file_attr(const struct file_kattr *fa,
 	fattr->fa_nextents = fa->fsx_nextents;
 	fattr->fa_projid = fa->fsx_projid;
 	fattr->fa_cowextsize = fa->fsx_cowextsize;
+	fattr->fa_ptime_sec = fa->fsx_ptime.tv_sec;
+	fattr->fa_ptime_nsec = fa->fsx_ptime.tv_nsec;
 }
 
 /**
@@ -163,6 +165,10 @@ static int file_attr_to_fileattr(const struct file_attr *fattr,
 	fa->fsx_extsize = fattr->fa_extsize;
 	fa->fsx_projid = fattr->fa_projid;
 	fa->fsx_cowextsize = fattr->fa_cowextsize;
+	if (fattr->fa_xflags_mask & FS_XFLAG_PTIME) {
+		fa->fsx_ptime.tv_sec = fattr->fa_ptime_sec;
+		fa->fsx_ptime.tv_nsec = fattr->fa_ptime_nsec;
+	}
 
 	return 0;
 }
@@ -245,6 +251,23 @@ static int fileattr_set_prepare(struct inode *inode,
 	    !S_ISREG(inode->i_mode) && !S_ISDIR(inode->i_mode))
 		return -EINVAL;
 
+	if (fa->fsx_xflags_mask & FS_XFLAG_PTIME) {
+		if (!(old_ma->fsx_xflags_mask & FS_XFLAG_PTIME))
+			return -EOPNOTSUPP;
+
+		if (!(fa->fsx_xflags & FS_XFLAG_PTIME))
+			return -EINVAL;
+
+		if ((unsigned long)fa->fsx_ptime.tv_nsec >= NSEC_PER_SEC)
+			return -EINVAL;
+
+		fa->fsx_ptime = timestamp_truncate(fa->fsx_ptime, inode);
+
+		if (!timespec64_equal(&old_ma->fsx_ptime, &fa->fsx_ptime) &&
+		    (fa->flags & old_ma->flags) & (FS_APPEND_FL | FS_IMMUTABLE_FL))
+			return -EPERM;
+	}
+
 	/*
 	 * It is only valid to set the DAX flag on regular files and
 	 * directories on filesystems.
@@ -309,6 +332,7 @@ int vfs_fileattr_set(const struct mnt_idmap *idmap, struct dentry *dentry,
 			fa->fsx_nextents = old_ma.fsx_nextents;
 			fa->fsx_projid = old_ma.fsx_projid;
 			fa->fsx_cowextsize = old_ma.fsx_cowextsize;
+			fa->fsx_ptime = old_ma.fsx_ptime;
 		} else {
 			/*
 			 * Preserve unmasked xflags when running file_setattr()
@@ -333,6 +357,10 @@ int vfs_fileattr_set(const struct mnt_idmap *idmap, struct dentry *dentry,
 					fa->fsx_cowextsize = old_ma.fsx_cowextsize;
 			}
 			fa->flags |= old_ma.flags & ~FS_COMMON_FL;
+
+			/* xflags not present in fsxattr */
+			if (!(fa->fsx_xflags_mask & FS_XFLAG_PTIME))
+				fa->fsx_ptime = old_ma.fsx_ptime;
 		}
 
 		err = fileattr_set_prepare(inode, &old_ma, fa);
@@ -461,6 +489,10 @@ SYSCALL_DEFINE5(file_getattr, int, dfd, const char __user *, filename,
 		return error;
 
 	fileattr_to_file_attr(&fa, &fattr);
+
+	if (usize < FILE_ATTR_SIZE_VER1)
+		fattr.fa_xflags &= ~FS_XFLAG_PTIME;
+
 	error = copy_struct_to_user(ufattr, usize, &fattr,
 				    sizeof(struct file_attr), NULL);
 
@@ -496,6 +528,9 @@ SYSCALL_DEFINE5(file_setattr, int, dfd, const char __user *, filename,
 				      usize);
 	if (error)
 		return error;
+
+	if ((fattr.fa_xflags & FS_XFLAG_PTIME) && usize < FILE_ATTR_SIZE_VER1)
+		return -EINVAL;
 
 	error = file_attr_to_fileattr(&fattr, &fa);
 	if (error)
