@@ -3733,8 +3733,10 @@ static void smb2_update_xattrs(struct ksmbd_tree_connect *tcon,
 	if (rc > 0) {
 		if (store_dos_attrs) {
 			fp->f_ci->m_fattr = cpu_to_le32(da.attr);
-			fp->create_time = da.create_time;
-			fp->itime = da.itime;
+			if (da.flags & XATTR_DOSINFO_CREATE_TIME)
+				fp->create_time = da.create_time;
+			if (da.flags & XATTR_DOSINFO_ITIME)
+				fp->itime = da.itime;
 		} else {
 			fp->f_ci->m_fattr &=
 				~(FILE_ATTRIBUTE_COMPRESSED_LE |
