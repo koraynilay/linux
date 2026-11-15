@@ -621,6 +621,23 @@ nfsd_setattr(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	if (attr->na_seclabel && attr->na_seclabel->len)
 		attr->na_labelerr = security_inode_setsecctx(dentry,
 			attr->na_seclabel->data, attr->na_seclabel->len);
+
+	if (attr->na_time_create) {
+		struct file_kattr fa = {
+			.fsx_valid = true,
+			.fsx_xflags = FS_XFLAG_PTIME,
+			.fsx_xflags_mask = FS_XFLAG_PTIME,
+			.fsx_ptime = *attr->na_time_create,
+		};
+
+		host_err = vfs_fileattr_set_locked(&nop_mnt_idmap, dentry, &fa);
+		if (host_err) {
+			if (host_err == -ENOIOCTLCMD)
+				host_err = -EOPNOTSUPP;
+			goto out_fill_attrs;
+		}
+	}
+
 	if (IS_ENABLED(CONFIG_FS_POSIX_ACL) && attr->na_dpacl) {
 		if (!S_ISDIR(inode->i_mode))
 			attr->na_dpaclerr = -EINVAL;

@@ -100,6 +100,7 @@ struct nfsd_attrs {
 	struct xdr_netobj	*na_seclabel;	/* input */
 	struct posix_acl	*na_pacl;	/* input */
 	struct posix_acl	*na_dpacl;	/* input */
+	struct timespec64	*na_time_create; /* input */
 
 	int			na_labelerr;	/* output */
 	int			na_dpaclerr;	/* output */
@@ -118,7 +119,8 @@ static inline bool nfsd_attrs_valid(struct nfsd_attrs *attrs)
 
 	return (iap->ia_valid || (attrs->na_seclabel &&
 		attrs->na_seclabel->len) ||
-		attrs->na_pacl || attrs->na_dpacl);
+		attrs->na_pacl || attrs->na_dpacl ||
+		attrs->na_time_create);
 }
 
 struct nfsd_net;

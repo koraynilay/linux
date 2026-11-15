@@ -322,6 +322,9 @@ nfsd4_create_file(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	__be32 status, create_status;
 	int want_write_err;
 
+	if (open->op_bmval[1] & FATTR4_WORD1_TIME_CREATE)
+		attrs.na_time_create = &open->op_time_create;
+
 	if (name_is_dot_dotdot(open->op_fname, open->op_fnamelen))
 		return nfserr_exist;
 	if (!(iap->ia_valid & ATTR_MODE))
@@ -929,6 +932,9 @@ nfsd4_create(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 	__be32 status;
 	dev_t rdev;
 
+	if (create->cr_bmval[1] & FATTR4_WORD1_TIME_CREATE)
+		attrs.na_time_create = &create->cr_time_create;
+
 	fh_init(&resfh, NFS4_FHSIZE);
 
 	status = fh_verify(rqstp, &cstate->current_fh, S_IFDIR, NFSD_MAY_NOP);
@@ -1346,6 +1352,9 @@ nfsd4_setattr(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 	struct inode *inode;
 	__be32 status = nfs_ok;
 	int err;
+
+	if (setattr->sa_bmval[1] & FATTR4_WORD1_TIME_CREATE)
+		attrs.na_time_create = &setattr->sa_time_create;
 
 	deleg_attrs = setattr->sa_bmval[2] & (FATTR4_WORD2_TIME_DELEG_ACCESS |
 					      FATTR4_WORD2_TIME_DELEG_MODIFY);
