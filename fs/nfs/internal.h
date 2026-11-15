@@ -458,6 +458,8 @@ extern int nfs_wait_bit_killable(struct wait_bit_key *key, int mode);
 
 struct file_kattr;
 int nfs_fileattr_get(struct dentry *dentry, struct file_kattr *fa);
+int nfs_fileattr_set(const struct mnt_idmap *idmap, struct dentry *dentry,
+		     struct file_kattr *fa);
 
 #if IS_ENABLED(CONFIG_NFS_LOCALIO)
 /* localio.c */

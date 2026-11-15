@@ -833,6 +833,7 @@ struct nfs_setattrargs {
 	const struct nfs_server *	server; /* Needed for name mapping */
 	const u32 *			bitmask;
 	const struct nfs4_label		*label;
+	const struct timespec64		*time_create;
 };
 
 enum nfs4_acl_type {
@@ -1801,6 +1802,8 @@ struct nfs_rpc_ops {
 			    struct nfs_fattr *, struct inode *);
 	int	(*setattr) (struct dentry *, struct nfs_fattr *,
 			    struct iattr *);
+	int	(*fileattr_set)(const struct mnt_idmap *, struct dentry *,
+				struct file_kattr *);
 	int	(*lookup)  (struct inode *, struct dentry *, const struct qstr *,
 			    struct nfs_fh *, struct nfs_fattr *);
 	int	(*lookupp) (struct inode *, struct nfs_fh *,

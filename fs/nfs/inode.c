@@ -955,7 +955,7 @@ static u32 nfs_get_valid_attrmask(struct inode *inode)
 		reply_mask |= STATX_BLOCKS;
 	if (!(cache_validity & NFS_INO_INVALID_BTIME) &&
 	    (fattr_valid & NFS_ATTR_FATTR_BTIME))
-		reply_mask |= STATX_BTIME;
+		reply_mask |= STATX_BTIME | STATX_PTIME;
 	if (!(cache_validity & NFS_INO_INVALID_CHANGE))
 		reply_mask |= STATX_CHANGE_COOKIE;
 	return reply_mask;
@@ -978,10 +978,10 @@ int nfs_getattr(const struct mnt_idmap *idmap, const struct path *path,
 	request_mask &= STATX_TYPE | STATX_MODE | STATX_NLINK | STATX_UID |
 			STATX_GID | STATX_ATIME | STATX_MTIME | STATX_CTIME |
 			STATX_INO | STATX_SIZE | STATX_BLOCKS | STATX_BTIME |
-			STATX_CHANGE_COOKIE;
+			STATX_PTIME | STATX_CHANGE_COOKIE;
 
 	if (!(fattr_valid & NFS_ATTR_FATTR_BTIME))
-		request_mask &= ~STATX_BTIME;
+		request_mask &= ~(STATX_BTIME | STATX_PTIME);
 
 	if ((query_flags & AT_STATX_DONT_SYNC) && !force_sync) {
 		if (readdirplus_enabled)
@@ -1015,7 +1015,7 @@ int nfs_getattr(const struct mnt_idmap *idmap, const struct path *path,
 	if (!(request_mask & (STATX_MODE|STATX_NLINK|STATX_ATIME|STATX_CTIME|
 					STATX_MTIME|STATX_UID|STATX_GID|
 					STATX_SIZE|STATX_BLOCKS|STATX_BTIME|
-					STATX_CHANGE_COOKIE)))
+					STATX_PTIME|STATX_CHANGE_COOKIE)))
 		goto out_no_revalidate;
 
 	/* Check whether the cached attributes are stale */
@@ -1038,7 +1038,7 @@ int nfs_getattr(const struct mnt_idmap *idmap, const struct path *path,
 		do_update |= cache_validity & NFS_INO_INVALID_OTHER;
 	if (request_mask & STATX_BLOCKS)
 		do_update |= cache_validity & NFS_INO_INVALID_BLOCKS;
-	if (request_mask & STATX_BTIME)
+	if (request_mask & (STATX_BTIME | STATX_PTIME))
 		do_update |= cache_validity & NFS_INO_INVALID_BTIME;
 
 	if (do_update) {
@@ -1061,6 +1061,7 @@ out_no_revalidate:
 	if (S_ISDIR(inode->i_mode))
 		stat->blksize = NFS_SERVER(inode)->dtsize;
 	stat->btime = NFS_I(inode)->btime;
+	stat->ptime = NFS_I(inode)->btime;
 
 	/* Special handling for STATX_DIOALIGN and STATX_DIO_READ_ALIGN
 	 * - NFS doesn't have DIO alignment constraints, avoid getting
@@ -1092,9 +1093,25 @@ int nfs_fileattr_get(struct dentry *dentry, struct file_kattr *fa)
 	}
 	if (nfs_server_capable(inode, NFS_CAP_CASE_NONPRESERVING))
 		fa->fsx_xflags |= FS_XFLAG_CASENONPRESERVING;
+	if (NFS_SERVER(inode)->fattr_valid & NFS_ATTR_FATTR_BTIME) {
+		fa->fsx_xflags |= FS_XFLAG_PTIME;
+		fa->fsx_xflags_mask |= FS_XFLAG_PTIME;
+		fa->fsx_ptime = NFS_I(inode)->btime;
+	}
 	return 0;
 }
 EXPORT_SYMBOL_GPL(nfs_fileattr_get);
+
+int nfs_fileattr_set(const struct mnt_idmap *idmap, struct dentry *dentry,
+		     struct file_kattr *fa)
+{
+	const struct nfs_rpc_ops *ops = NFS_PROTO(d_inode(dentry));
+
+	if (ops->fileattr_set)
+		return ops->fileattr_set(idmap, dentry, fa);
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL_GPL(nfs_fileattr_set);
 
 static void nfs_init_lock_context(struct nfs_lock_context *l_ctx)
 {
