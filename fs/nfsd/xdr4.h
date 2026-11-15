@@ -123,6 +123,7 @@ struct nfsd4_create {
 	struct posix_acl *cr_dpacl;
 	struct posix_acl *cr_pacl;
 	struct xdr_netobj cr_label;
+	struct timespec64 cr_time_create;
 };
 #define cr_datalen	u.link.datalen
 #define cr_data		u.link.data
@@ -277,6 +278,7 @@ struct nfsd4_open {
 	struct posix_acl *op_dpacl;
 	struct posix_acl *op_pacl;
 	struct xdr_netobj op_label;
+	struct timespec64 op_time_create;
 	struct svc_rqst *op_rqstp;
 };
 
@@ -378,6 +380,7 @@ struct nfsd4_setattr {
 	struct xdr_netobj sa_label;
 	struct posix_acl *sa_dpacl;
 	struct posix_acl *sa_pacl;
+	struct timespec64 sa_time_create;
 };
 
 struct nfsd4_setclientid {

@@ -509,7 +509,8 @@ static __be32
 nfsd4_decode_fattr4(struct nfsd4_compoundargs *argp, u32 *bmval, u32 bmlen,
 		    struct iattr *iattr, struct nfs4_acl **acl,
 		    struct xdr_netobj *label, int *umask,
-		    struct posix_acl **dpaclp, struct posix_acl **paclp)
+		    struct posix_acl **dpaclp, struct posix_acl **paclp,
+		    struct timespec64 *time_create)
 {
 	unsigned int starting_pos;
 	u32 attrlist4_count;
@@ -603,11 +604,10 @@ nfsd4_decode_fattr4(struct nfsd4_compoundargs *argp, u32 *bmval, u32 bmlen,
 		}
 	}
 	if (bmval[1] & FATTR4_WORD1_TIME_CREATE) {
-		struct timespec64 ts;
+		if (!time_create)
+			return nfserr_bad_xdr;
 
-		/* No Linux filesystem supports setting this attribute. */
-		bmval[1] &= ~FATTR4_WORD1_TIME_CREATE;
-		status = nfsd4_decode_nfstime4(argp, &ts);
+		status = nfsd4_decode_nfstime4(argp, time_create);
 		if (status)
 			return status;
 	}
@@ -1013,7 +1013,8 @@ nfsd4_decode_create(struct nfsd4_compoundargs *argp, union nfsd4_op_u *u)
 				    ARRAY_SIZE(create->cr_bmval),
 				    &create->cr_iattr, &create->cr_acl,
 				    &create->cr_label, &create->cr_umask,
-				    &create->cr_dpacl, &create->cr_pacl);
+				    &create->cr_dpacl, &create->cr_pacl,
+				    &create->cr_time_create);
 	if (status)
 		return status;
 
@@ -1165,7 +1166,8 @@ nfsd4_decode_createhow4(struct nfsd4_compoundargs *argp, struct nfsd4_open *open
 					     ARRAY_SIZE(open->op_bmval),
 					     &open->op_iattr, &open->op_acl,
 					     &open->op_label, &open->op_umask,
-					     &open->op_dpacl, &open->op_pacl);
+					     &open->op_dpacl, &open->op_pacl,
+					     &open->op_time_create);
 		if (status)
 			return status;
 		break;
@@ -1184,7 +1186,8 @@ nfsd4_decode_createhow4(struct nfsd4_compoundargs *argp, struct nfsd4_open *open
 					     ARRAY_SIZE(open->op_bmval),
 					     &open->op_iattr, &open->op_acl,
 					     &open->op_label, &open->op_umask,
-					     &open->op_dpacl, &open->op_pacl);
+					     &open->op_dpacl, &open->op_pacl,
+					     &open->op_time_create);
 		if (status)
 			return status;
 		break;
@@ -1512,7 +1515,7 @@ nfsd4_decode_setattr(struct nfsd4_compoundargs *argp, union nfsd4_op_u *u)
 				   ARRAY_SIZE(setattr->sa_bmval),
 				   &setattr->sa_iattr, &setattr->sa_acl,
 				   &setattr->sa_label, NULL, &setattr->sa_dpacl,
-				   &setattr->sa_pacl);
+				   &setattr->sa_pacl, &setattr->sa_time_create);
 }
 
 static __be32
@@ -3646,7 +3649,14 @@ static __be32 nfsd4_encode_fattr4_time_access(struct xdr_stream *xdr,
 static __be32 nfsd4_encode_fattr4_time_create(struct xdr_stream *xdr,
 					      const struct nfsd4_fattr_args *args)
 {
-	return nfsd4_encode_nfstime4(xdr, &args->stat.btime);
+	const struct timespec64 *ts;
+
+	if (args->stat.result_mask & STATX_PTIME)
+		ts = &args->stat.ptime;
+	else
+		ts = &args->stat.btime;
+
+	return nfsd4_encode_nfstime4(xdr, ts);
 }
 
 /*
@@ -4089,8 +4099,8 @@ nfsd4_encode_fattr4(struct svc_rqst *rqstp, struct xdr_stream *xdr,
 	}
 
 	err = vfs_getattr(&path, &args.stat,
-			  STATX_BASIC_STATS | STATX_BTIME | STATX_CHANGE_COOKIE,
-			  AT_STATX_SYNC_AS_STAT);
+			  STATX_BASIC_STATS | STATX_BTIME | STATX_PTIME |
+			  STATX_CHANGE_COOKIE, AT_STATX_SYNC_AS_STAT);
 	if (dp) {
 		struct nfs4_cb_fattr *ncf = &dp->dl_cb_fattr;
 
@@ -4113,8 +4123,8 @@ nfsd4_encode_fattr4(struct svc_rqst *rqstp, struct xdr_stream *xdr,
 	if (err)
 		goto out_nfserr;
 
-	if (!(args.stat.result_mask & STATX_BTIME))
-		/* underlying FS does not offer btime so we can't share it */
+	if (!(args.stat.result_mask & (STATX_BTIME | STATX_PTIME)))
+		/* underlying FS does not offer ptime or btime so we can't share it */
 		attrmask[1] &= ~FATTR4_WORD1_TIME_CREATE;
 	if ((attrmask[0] & (FATTR4_WORD0_FILES_AVAIL | FATTR4_WORD0_FILES_FREE |
 			FATTR4_WORD0_FILES_TOTAL | FATTR4_WORD0_MAXNAME)) ||
@@ -4434,7 +4444,7 @@ nfsd4_setup_notify_entry4(struct notify_entry4 *ne, struct xdr_stream *xdr,
 		if (!setup_notify_fhandle(dentry, dp, nf, &args))
 			attrmask[0] &= ~FATTR4_WORD0_FILEHANDLE;
 
-		if (!(args.stat.result_mask & STATX_BTIME))
+		if (!(args.stat.result_mask & (STATX_PTIME | STATX_BTIME)))
 			attrmask[1] &= ~FATTR4_WORD1_TIME_CREATE;
 	}
 	attrmask[2] = 0;
