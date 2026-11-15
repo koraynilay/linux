@@ -55,6 +55,7 @@
 #include <linux/utsname.h>
 #include <linux/freezer.h>
 #include <linux/iversion.h>
+#include <linux/fileattr.h>
 
 #include "nfs4_fs.h"
 #include "delegation.h"
@@ -98,7 +99,8 @@ static int _nfs4_proc_getattr(struct nfs_server *server, struct nfs_fh *fhandle,
 			      struct nfs_fattr *fattr, struct inode *inode);
 static int nfs4_do_setattr(struct inode *inode, const struct cred *cred,
 			    struct nfs_fattr *fattr, struct iattr *sattr,
-			    struct nfs_open_context *ctx, struct nfs4_label *ilabel);
+			    struct nfs_open_context *ctx, struct nfs4_label *ilabel,
+			    const struct timespec64 *time_create);
 static struct rpc_task *_nfs41_proc_sequence(struct nfs_client *clp,
 		const struct cred *cred,
 		struct nfs4_slot *slot,
@@ -3216,7 +3218,7 @@ static int _nfs4_do_open(struct inode *dir,
 			nfs_fattr_init(opendata->o_res.f_attr);
 			status = nfs4_do_setattr(state->inode, cred,
 					opendata->o_res.f_attr, sattr,
-					ctx, label);
+					ctx, label, NULL);
 			if (status == 0) {
 				nfs_setattr_update_inode(state->inode, sattr,
 						opendata->o_res.f_attr);
@@ -3380,7 +3382,8 @@ zero_stateid:
 
 static int nfs4_do_setattr(struct inode *inode, const struct cred *cred,
 			   struct nfs_fattr *fattr, struct iattr *sattr,
-			   struct nfs_open_context *ctx, struct nfs4_label *ilabel)
+			   struct nfs_open_context *ctx, struct nfs4_label *ilabel,
+			   const struct timespec64 *time_create)
 {
 	struct nfs_server *server = NFS_SERVER(inode);
 	__u32 bitmask[NFS4_BITMASK_SZ];
@@ -3391,6 +3394,7 @@ static int nfs4_do_setattr(struct inode *inode, const struct cred *cred,
 		.server		= server,
 		.bitmask = bitmask,
 		.label		= ilabel,
+		.time_create	= time_create,
 	};
 	struct nfs_setattrres  res = {
 		.fattr		= fattr,
@@ -3413,6 +3417,9 @@ static int nfs4_do_setattr(struct inode *inode, const struct cred *cred,
 		adjust_flags |= NFS_INO_INVALID_ATIME;
 	if (sattr->ia_valid & ATTR_MTIME)
 		adjust_flags |= NFS_INO_INVALID_MTIME;
+
+	if (time_create)
+		adjust_flags |= NFS_INO_INVALID_BTIME;
 
 	do {
 		nfs4_bitmap_copy_adjust(bitmask, nfs4_bitmask(server, fattr->label),
@@ -4587,7 +4594,7 @@ nfs4_proc_setattr(struct dentry *dentry, struct nfs_fattr *fattr,
 	if ((sattr->ia_valid & (ATTR_MODE|ATTR_UID|ATTR_GID)) != 0)
 		nfs4_inode_make_writeable(inode);
 
-	status = nfs4_do_setattr(inode, cred, fattr, sattr, ctx, NULL);
+	status = nfs4_do_setattr(inode, cred, fattr, sattr, ctx, NULL, NULL);
 	if (status == 0) {
 		nfs_setattr_update_inode(inode, sattr, fattr);
 		nfs_setsecurity(inode, fattr);
@@ -10845,6 +10852,44 @@ static void nfs4_disable_swap(struct inode *inode)
 	wake_up_var(&clp->cl_state);
 }
 
+#define NFS4_SUPPORTED_XFLAGS	(FS_XFLAG_PTIME)
+static int nfs4_fileattr_set(const struct mnt_idmap *idmap, struct dentry *dentry,
+			     struct file_kattr *fa)
+{
+	struct inode *inode = d_inode(dentry);
+	struct nfs_server *server = NFS_SERVER(inode);
+	struct nfs_fattr *fattr;
+	struct iattr sattr = { .ia_valid = 0 };
+	const struct timespec64 *time_create = NULL;
+	int error;
+
+	if (!(server->fattr_valid & NFS_ATTR_FATTR_BTIME))
+		return -EOPNOTSUPP;
+
+	if (fa->flags_valid)
+		return -EOPNOTSUPP;
+
+	if (fileattr_has_fsx_mask(fa, NFS4_SUPPORTED_XFLAGS))
+		return -EOPNOTSUPP;
+
+	if (fa->fsx_xflags_mask & ~NFS4_SUPPORTED_XFLAGS)
+		return -EOPNOTSUPP;
+
+	if (fa->fsx_xflags_mask & FS_XFLAG_PTIME)
+		time_create = &fa->fsx_ptime;
+
+	fattr = nfs_alloc_fattr_with_label(server);
+	if (!fattr)
+		return -ENOMEM;
+
+	error = nfs4_do_setattr(inode, NULL, fattr, &sattr, NULL, NULL, time_create);
+	if (error == 0)
+		nfs_refresh_inode(inode, fattr);
+
+	nfs_free_fattr(fattr);
+	return error;
+}
+
 static const struct inode_operations nfs4_dir_inode_operations = {
 	.create		= nfs_create,
 	.lookup		= nfs_lookup,
@@ -10861,6 +10906,7 @@ static const struct inode_operations nfs4_dir_inode_operations = {
 	.setattr	= nfs_setattr,
 	.listxattr	= nfs4_listxattr,
 	.fileattr_get	= nfs_fileattr_get,
+	.fileattr_set	= nfs4_fileattr_set,
 };
 
 static const struct inode_operations nfs4_file_inode_operations = {
@@ -10869,6 +10915,7 @@ static const struct inode_operations nfs4_file_inode_operations = {
 	.setattr	= nfs_setattr,
 	.listxattr	= nfs4_listxattr,
 	.fileattr_get	= nfs_fileattr_get,
+	.fileattr_set	= nfs4_fileattr_set,
 };
 
 static struct nfs_server *nfs4_clone_server(struct nfs_server *source,
@@ -10905,6 +10952,7 @@ const struct nfs_rpc_ops nfs_v4_clientops = {
 	.try_get_tree	= nfs4_try_get_tree,
 	.getattr	= nfs4_proc_getattr,
 	.setattr	= nfs4_proc_setattr,
+	.fileattr_set	= nfs4_fileattr_set,
 	.lookup		= nfs4_proc_lookup,
 	.lookupp	= nfs4_proc_lookupp,
 	.access		= nfs4_proc_access,
