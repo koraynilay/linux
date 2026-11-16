@@ -1325,6 +1325,7 @@ static int ntfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	struct ntfs_mount_options *options = NULL;
 	struct inode *inode;
 	struct ntfs_inode *ni;
+	struct timespec64 ts;
 	size_t i, tt, bad_len, bad_frags;
 	CLST vcn, lcn, len;
 	struct ATTRIB *attr;
@@ -1361,6 +1362,10 @@ static int ntfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_op = &ntfs_sops;
 	sb->s_export_op = &ntfs_export_ops;
 	sb->s_time_gran = NTFS_TIME_GRAN; // 100 nsec
+	nt2kernel(0, &ts);
+	sb->s_time_min = ts.tv_sec;
+	nt2kernel(cpu_to_le64(S64_MAX), &ts);
+	sb->s_time_max = ts.tv_sec;
 	sb->s_xattr = ntfs_xattr_handlers;
 	set_default_d_op(sb, options->nocase ? &ntfs_dentry_ops : NULL);
 
