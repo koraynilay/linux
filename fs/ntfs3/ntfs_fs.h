@@ -1083,8 +1083,9 @@ static inline void nt2kernel(const __le64 tm, struct timespec64 *ts)
 	/* use signed 64 bit to support timestamps prior to epoch. xfstest 258. */
 	s64 t = le64_to_cpu(tm) - _100ns2seconds * SecondsToStartOf1970;
 
-	ts->tv_sec = div_s64_rem(t, _100ns2seconds, &t32);
-	ts->tv_nsec = t32 * 100;
+	s64 sec = div_s64_rem(t, _100ns2seconds, &t32);
+	s64 nsec = t32 * 100;
+	set_normalized_timespec64(ts, sec, nsec);
 }
 
 static inline struct ntfs_sb_info *ntfs_sb(struct super_block *sb)
